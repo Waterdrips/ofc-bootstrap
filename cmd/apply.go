@@ -6,6 +6,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"github.com/openfaas-incubator/ofc-bootstrap/pkg/charts"
 	"github.com/openfaas-incubator/ofc-bootstrap/pkg/stack"
 	"io/ioutil"
 	"log"
@@ -401,9 +402,13 @@ func cloudComponentsInstall(plan types.Plan) error {
 		return cloneErr
 	}
 
-	ofcValuesErr := writeOFCValuesYaml(plan)
-	if ofcValuesErr != nil {
-		return ofcValuesErr
+	ofcValues, err := writeOFCValuesYaml(plan)
+	if err != nil {
+		return err
+	}
+
+	err = charts.InstallOFC(ofcValues, plan.OpenFaaSCloudVersion); if err != nil {
+		return err
 	}
 
 	deployErr := deployCloudComponents(plan)
@@ -413,69 +418,57 @@ func cloudComponentsInstall(plan types.Plan) error {
 	return nil
 }
 
-func writeOFCValuesYaml(plan types.Plan) error {
-	ofcOptions := &types.OFCValues{}
+func writeOFCValuesYaml(plan types.Plan) (map[string]string, error) {
+	ofcOpts := types.OFCOpts{Options: map[string]string{}}
 
-	ofcOptions.NetworkPolicies.Enabled = plan.NetworkPolicies
+	ofcOpts.Set("networkPolicies.enabled", strconv.FormatBool(plan.NetworkPolicies))
+	ofcOpts.Set("edgeAuth.enableOauth2", "false")
 
 	if plan.EnableOAuth {
-		ofcOptions.EdgeAuth.EnableOauth2 = true
-		ofcOptions.EdgeAuth.OauthProvider = plan.SCM
-		ofcOptions.EdgeAuth.ClientID = plan.OAuth.ClientId
-		ofcOptions.EdgeAuth.OauthProviderBaseURL = plan.OAuth.OAuthProviderBaseURL
-	} else {
-		ofcOptions.EdgeAuth.EnableOauth2 = false
+		ofcOpts.Set("edgeAuth.enableOauth2", "true")
+		ofcOpts.Set("edgeAuth.oauthProvider", plan.SCM)
+		ofcOpts.Set("edgeAuth.clientId", plan.OAuth.ClientId)
+		ofcOpts.Set("edgeauth.oauthProviderBaseURL", plan.OAuth.OAuthProviderBaseURL)
 	}
 
-	ofcOptions.NetworkPolicies.Enabled = plan.NetworkPolicies
-	ofcOptions.Global.EnableECR = plan.EnableECR
+	ofcOpts.Set("global.enableECR", strconv.FormatBool(plan.EnableECR))
 
 	if plan.TLS {
-		ofcOptions.TLS.IssuerType = plan.TLSConfig.IssuerType
-		ofcOptions.TLS.Enabled = true
-		ofcOptions.TLS.Email = plan.TLSConfig.Email
-		ofcOptions.TLS.DNSService = plan.TLSConfig.DNSService
-		switch ofcOptions.TLS.DNSService {
+		ofcOpts.Set("tls.issuerType", plan.TLSConfig.IssuerType)
+		ofcOpts.Set("tls.enabled", "true")
+		ofcOpts.Set("tls.email", plan.TLSConfig.Email)
+		ofcOpts.Set("tls.dnsService", plan.TLSConfig.DNSService)
+		switch plan.TLSConfig.DNSService {
 		case types.CloudDNS:
-			ofcOptions.TLS.CloudDNS.ProjectID = plan.TLSConfig.ProjectID
+			ofcOpts.Set("tls.clouddns.projectID", plan.TLSConfig.ProjectID)
 		case types.Cloudflare:
-			ofcOptions.TLS.Cloudflare.Email = plan.TLSConfig.Email
-			ofcOptions.TLS.Cloudflare.ProjectID = plan.TLSConfig.ProjectID
+			ofcOpts.Set("tls.cloudflare.email", plan.TLSConfig.Email)
+			ofcOpts.Set("tls.cloudflare.projectID", plan.TLSConfig.ProjectID)
 		case types.Route53:
-			ofcOptions.TLS.Route53.AccessKeyID = plan.TLSConfig.AccessKeyID
-			ofcOptions.TLS.Route53.Region = plan.TLSConfig.Region
+			ofcOpts.Set("tls.route53.accessKeyID", plan.TLSConfig.AccessKeyID)
+			ofcOpts.Set("tls.route53.region", plan.TLSConfig.Region)
 		case types.DigitalOcean:
 			// No special config for DO DNS
 		default:
-			log.Fatalf("dns service not recognised: %s", ofcOptions.TLS.DNSService)
+			log.Fatalf("dns service not recognised: %s", plan.TLSConfig.DNSService)
 		}
 
 	} else {
-		ofcOptions.TLS.Enabled = false
+		ofcOpts.Set("tls.enabled", "false")
 	}
 
-	ofcOptions.Customers.CustomersSecret = plan.CustomersSecret
-	ofcOptions.Customers.URL = plan.CustomersURL
+	ofcOpts.Set("customers.customerSecret", strconv.FormatBool(plan.CustomersSecret))
+	ofcOpts.Set("customers.url", plan.CustomersURL)
 	if len(plan.CustomersURL) == 0 && !plan.CustomersSecret {
-		return errors.New("unable to continue without a customers secret or url")
+		return nil, errors.New("unable to continue without a customers secret or url")
 	}
 
-	ofcOptions.Global.EnableECR = plan.EnableECR
-	ofcOptions.Global.RootDomain = plan.RootDomain
+	ofcOpts.Set("global.rootDomain", plan.RootDomain)
 
-	ofcOptions.Ingress.MaxConnections = plan.IngressConfig.MaxConnections
-	ofcOptions.Ingress.RequestsPerMinute = plan.IngressConfig.RequestsPerMinute
-	yamlBytes, err := yaml.Marshal(&ofcOptions)
-	if err != nil {
-		log.Fatalf("error: %v", err)
-	}
-	filePath := "./tmp/ofc-values.yaml"
-	fileErr := ioutil.WriteFile(filePath, yamlBytes, 0644)
-	if fileErr != nil {
-		return fileErr
-	}
+	ofcOpts.Set("ingress.maxConnections", plan.IngressConfig.MaxConnections)
+	ofcOpts.Set("ingress.requestsPerMinute", plan.IngressConfig.RequestsPerMinute)
 
-	return nil
+	return ofcOpts.Options, nil
 }
 
 func helmRepoAdd(name, repo string) error {
