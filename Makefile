@@ -31,4 +31,8 @@ fmt:
 hash:
 	rm -rf bin/*.sha256 && ./hack/hashgen.sh
 
-all: fmt build install-ci ci static dist hash
+.PHONY: verify-ci
+verify-ci:
+	./hack/verify-ci.sh
+
+all: fmt build install-ci ci verify-ci static dist hash
